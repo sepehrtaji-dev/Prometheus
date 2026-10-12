@@ -67,8 +67,25 @@ def _build_openai_messages(
         result.append({"role": "system", "content": request.system_prompt})
 
     for msg in request.messages:
-        # Pass through pre-formatted dicts (e.g. multimodal vision requests)
+        # Pass through pre-formatted dicts (e.g. multimodal vision requests),
+        # but never let this shortcut bypass the provider's declared vision
+        # capability. Structured messages must obey the same image gate as
+        # ConversationMessage/ImageBlock inputs below.
         if isinstance(msg, dict):
+            raw_content = msg.get("content")
+            if not allow_images and isinstance(raw_content, list):
+                image_parts = [
+                    part for part in raw_content
+                    if isinstance(part, dict)
+                    and part.get("type") in {"image_url", "input_image", "image"}
+                ]
+                if image_parts:
+                    raise UnsupportedContentBlock(
+                        "this provider does not accept images in pre-formatted "
+                        f"{msg.get('role', 'unknown')!r} messages "
+                        f"({len(image_parts)} image part(s)); declare vision support "
+                        "only for providers that accept image input"
+                    )
             result.append(msg)
             continue
 
