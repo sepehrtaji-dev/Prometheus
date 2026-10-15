@@ -52,6 +52,18 @@ def _violation(exc: SandboxViolation) -> ToolResult:
     return ToolResult(output=f"SANDBOX VIOLATION: {exc}", is_error=True)
 
 
+def _glob_matches(path: str, pattern: str) -> bool:
+    """Match fnmatch patterns while treating **/ as zero-or-more directories.
+
+    fnmatch has no globstar semantics: **/*.py otherwise rejects a root-level
+    module.py. Translate with fnmatch first to preserve its existing matching
+    behavior, then make each translated globstar directory optional. Python
+    3.11+ emits the atomic-group form handled here.
+    """
+    translated = fnmatch.translate(pattern).replace("(?>.*?/)", "(?:.*/)?")
+    return re.match(translated, path) is not None
+
+
 def _iter_files(root: Path):
     """Walk *root* skipping VCS/cache dirs, yielding files only."""
     stack = [root]
@@ -298,7 +310,7 @@ class CodeGrepArgs(BaseModel):
     pattern: str = Field(description="Python regular expression to search for.")
     path_glob: str = Field(
         default="**/*",
-        description="Glob filter for files to search (e.g. 'src/**/*.py').",
+        description="Glob filter for files to search (e.g. '**/*.py').",
     )
 
 
@@ -309,7 +321,7 @@ class CodeGrepTool(BaseTool):
         "caches, binaries). Returns path:line: text matches."
     )
     input_model = CodeGrepArgs
-    example_call = {"pattern": r"def total\(", "path_glob": "src/**/*.py"}
+    example_call = {"pattern": r"def total\(", "path_glob": "**/*.py"}
 
     def __init__(self, sandbox: Sandbox) -> None:
         self._sandbox = sandbox
@@ -332,7 +344,7 @@ class CodeGrepTool(BaseTool):
         hits: list[str] = []
         for f in _iter_files(root):
             rel = f.relative_to(root).as_posix()
-            if not fnmatch.fnmatch(rel, arguments.path_glob):
+            if not _glob_matches(rel, arguments.path_glob):
                 continue
             try:
                 if f.stat().st_size > _GREP_FILE_SIZE_CAP:
@@ -361,14 +373,14 @@ class CodeGrepTool(BaseTool):
 
 
 class CodeGlobArgs(BaseModel):
-    pattern: str = Field(description="Glob pattern relative to the repo root, e.g. 'src/**/*.py'.")
+    pattern: str = Field(description="Glob pattern relative to the repo root, e.g. '**/*.py'.")
 
 
 class CodeGlobTool(BaseTool):
     name = "code_glob"
     description = "List repo files matching a glob pattern (sorted; skips .git and caches)."
     input_model = CodeGlobArgs
-    example_call = {"pattern": "tests/**/*.py"}
+    example_call = {"pattern": "**/*.py"}
 
     def __init__(self, sandbox: Sandbox) -> None:
         self._sandbox = sandbox
@@ -383,7 +395,7 @@ class CodeGlobTool(BaseTool):
         matches = sorted(
             f.relative_to(root).as_posix()
             for f in _iter_files(root)
-            if fnmatch.fnmatch(f.relative_to(root).as_posix(), arguments.pattern)
+            if _glob_matches(f.relative_to(root).as_posix(), arguments.pattern)
         )
         if not matches:
             return ToolResult(output=f"NO FILES match {arguments.pattern!r}")
